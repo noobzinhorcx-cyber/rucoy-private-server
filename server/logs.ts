@@ -17,7 +17,7 @@ class LogManager extends EventEmitter {
   private servers: ServerInfo[] = [
     {
       name: "Private Server 1",
-      ip: "127.0.0.1",
+      ip: "10.0.0.49",
       port: 4000,
       region: "local",
       version: "1.25.2",
