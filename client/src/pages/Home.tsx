@@ -1,33 +1,39 @@
-import { useAuth } from "@/_core/hooks/useAuth";
-import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
-import { Streamdown } from 'streamdown';
+import { useEffect, useRef, useState } from "react";
 
-/**
- * All content in this page are only for example, replace with your own feature implementation
- * When building pages, remember your instructions in Frontend Workflow, Frontend Best Practices, Design Guide and Common Pitfalls
- */
 export default function Home() {
-  // The useAuth hook provides authentication state.
-  // To implement login/logout, call logout(), or start login from an event
-  // handler: onClick={() => startLogin()} (imported from "@/const"). Never call
-  // startLogin() during render (no href={startLogin()}) — it mints a one-time
-  // nonce cookie and must run only at the moment of navigation.
-  let { user, loading, error, isAuthenticated, logout } = useAuth();
+  const [logs, setLogs] = useState<string[]>([]);
+  const logsEndRef = useRef<HTMLDivElement>(null);
 
-  // If theme is switchable in App.tsx, we can implement theme toggling like this:
-  // const { theme, toggleTheme } = useTheme();
+  useEffect(() => {
+    // Conectar ao WebSocket para receber logs em tempo real
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${protocol}//${window.location.host}/api/logs`);
+
+    ws.onmessage = (event) => {
+      const log = event.data;
+      setLogs((prev) => [...prev, log]);
+    };
+
+    ws.onerror = () => {
+      setLogs((prev) => [...prev, "[ERRO] Falha na conexão WebSocket"]);
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
+  // Auto-scroll para o final dos logs
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <main>
-        {/* Example: lucide-react for icons */}
-        <Loader2 className="animate-spin" />
-        Example Page
-        {/* Example: Streamdown for markdown rendering */}
-        <Streamdown>Any **markdown** content</Streamdown>
-        <Button variant="default">Example Button</Button>
-      </main>
+    <div style={{ backgroundColor: "white", minHeight: "100vh", padding: "10px", fontFamily: "monospace", fontSize: "12px", overflow: "auto" }}>
+      {logs.map((log, index) => (
+        <div key={index}>{log}</div>
+      ))}
+      <div ref={logsEndRef} />
     </div>
   );
 }
