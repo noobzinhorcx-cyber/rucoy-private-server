@@ -1,12 +1,11 @@
 import net from "net";
+import crypto from "node:crypto";
 import { logManager } from "./logs";
 
 /**
  * Rucoy Game Server - Servidor TCP integrado ao backend Node.js
  * Escuta conexões dos clientes do jogo na porta 4000
- * Todos os logs são enviados automaticamente para o dashboard via WebSocket
- * 
- * Filtra conexões HTTP (health checks do Render) para não poluir os logs.
+ * Implementa o protocolo de handshake RSA para evitar o erro "check internet connection"
  */
 
 const GAME_PORT = parseInt(process.env.GAME_PORT || "4000");
@@ -19,14 +18,30 @@ function isHttpRequest(data: Buffer): boolean {
   return HTTP_METHODS.some(method => text.startsWith(method));
 }
 
+enum HandshakePhase {
+  VERSION_CHECK,
+  RSA_KEY_EXCHANGE,
+  SECRET_EXCHANGE,
+  AUTHENTICATION,
+  COMPLETED
+}
+
 interface ClientState {
   buffer: Buffer;
   address: string;
   connectedAt: Date;
   isHttp: boolean;
-  handshakeSent: boolean;
-  handshakeCompleted: boolean;
+  phase: HandshakePhase;
+  serverSecret: Buffer;
+  clientSecret?: Buffer;
+  clientPublicKey?: crypto.KeyObject;
 }
+
+// Chave RSA do Servidor (2048 bits para gerar blocos de 256 bytes)
+const serverKeyPair = crypto.generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  publicExponent: 65537,
+});
 
 function handleClient(socket: net.Socket): void {
   const address = `${socket.remoteAddress}:${socket.remotePort}`;
@@ -35,22 +50,36 @@ function handleClient(socket: net.Socket): void {
     address,
     connectedAt: new Date(),
     isHttp: false,
-    handshakeSent: false,
-    handshakeCompleted: false,
+    phase: HandshakePhase.VERSION_CHECK,
+    serverSecret: crypto.randomBytes(8),
   };
 
-  // Rucoy Handshake: O servidor deve enviar 135 bytes assim que o cliente conecta
-  setTimeout(() => {
-    if (!clientState.isHttp && !clientState.handshakeSent) {
-      sendHandshake(socket, clientState);
-    }
-  }, 100);
+  // Iniciar handshake enviando a versão
+  const versionPacket = Buffer.alloc(4);
+  versionPacket.writeInt32BE(25); // Versão 25 esperada pelo APK
+  socket.write(versionPacket);
+  logManager.addLog(`[GAME] [${address}] Enviado Versão 25`);
+
+  // Próximo passo: Enviar chave pública do servidor
+  const modulus = serverKeyPair.publicKey.export({ format: "jwk" }).n;
+  if (!modulus) return;
+  const modulusBuf = Buffer.from(modulus, "base64url");
+  const exponentBuf = Buffer.alloc(4);
+  exponentBuf.writeInt32BE(65537);
+
+  const keyPacket = Buffer.concat([
+    Buffer.from([0x00, 0x01, 0x04]), // Header: 260 bytes payload (256 modulus + 4 exponent)
+    modulusBuf,
+    exponentBuf
+  ]);
+  
+  socket.write(keyPacket);
+  clientState.phase = HandshakePhase.RSA_KEY_EXCHANGE;
+  logManager.addLog(`[GAME] [${address}] Enviado Chave RSA Servidor (263 bytes)`);
 
   socket.on("data", (data: Buffer) => {
-    // Acumular dados recebidos
     clientState.buffer = Buffer.concat([clientState.buffer, data]);
 
-    // Verificar se é uma requisição HTTP (health check do Render)
     if (!clientState.isHttp && isHttpRequest(data)) {
       clientState.isHttp = true;
       socket.end();
@@ -58,13 +87,6 @@ function handleClient(socket: net.Socket): void {
     }
 
     if (clientState.isHttp) return;
-
-    // Log de dados reais do jogo
-    const hex = data.toString("hex");
-    const size = data.length;
-    logManager.addLog(`[GAME] Recebido de ${address} (${size} bytes): ${hex}`);
-
-    // Processar protocolo
     processGameData(socket, clientState);
   });
 
@@ -84,34 +106,98 @@ function handleClient(socket: net.Socket): void {
   });
 }
 
-function sendHandshake(socket: net.Socket, clientState: ClientState): void {
-  // De acordo com engenharia reversa, o servidor envia 135 bytes
-  // TODO: Substituir pelos bytes reais do servidor oficial se necessário
-  const handshake = Buffer.alloc(135, 0);
-  
-  // Alguns servidores Rucoy antigos usavam os primeiros bytes para versão/status
-  handshake[0] = 0x00;
-  handshake[1] = 0x00;
-  handshake[2] = 0x84; // 132 em hex (excluindo header de 3 bytes)
-  
-  logManager.addLog(`[GAME] Enviando handshake (135 bytes) para ${clientState.address}`);
-  socket.write(handshake);
-  clientState.handshakeSent = true;
-}
-
 function processGameData(socket: net.Socket, clientState: ClientState): void {
-  // Se recebemos 259 bytes, é provavelmente a resposta do handshake
-  if (!clientState.handshakeCompleted && clientState.buffer.length >= 259) {
-    const response = clientState.buffer.subarray(0, 259);
+  const address = clientState.address;
+
+  // 1. Receber Chave Pública do Cliente (135 bytes: 3 header + 128 modulus + 4 exponent)
+  if (clientState.phase === HandshakePhase.RSA_KEY_EXCHANGE && clientState.buffer.length >= 135) {
+    const payload = clientState.buffer.subarray(3, 135);
+    clientState.buffer = clientState.buffer.subarray(135);
+
+    const modulus = payload.subarray(0, 128);
+    const exponent = payload.readInt32BE(128);
+
+    // Importar chave do cliente
+    clientState.clientPublicKey = crypto.createPublicKey({
+      key: {
+        kty: "RSA",
+        n: modulus.toString("base64url"),
+        e: Buffer.from([0, exponent >> 16, exponent >> 8, exponent & 0xFF]).toString("base64url"),
+      },
+      format: "jwk",
+    });
+
+    logManager.addLog(`[GAME] [${address}] Recebida Chave RSA Cliente (1024 bits)`);
+
+    // Enviar Segredo do Servidor (criptografado com a chave do cliente)
+    const encryptedSecret = crypto.publicEncrypt(
+      { key: clientState.clientPublicKey, padding: crypto.constants.RSA_PKCS1_PADDING },
+      clientState.serverSecret
+    );
+    
+    const secretPacket = Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x80]), // Header 128 bytes
+      encryptedSecret
+    ]);
+    
+    socket.write(secretPacket);
+    clientState.phase = HandshakePhase.SECRET_EXCHANGE;
+    logManager.addLog(`[GAME] [${address}] Enviado Segredo Servidor`);
+  }
+
+  // 2. Receber Segredo do Cliente (259 bytes: 3 header + 256 bytes encrypted)
+  if (clientState.phase === HandshakePhase.SECRET_EXCHANGE && clientState.buffer.length >= 259) {
+    const encrypted = clientState.buffer.subarray(3, 259);
     clientState.buffer = clientState.buffer.subarray(259);
-    
-    logManager.addLog(`[GAME] Handshake recebido de ${clientState.address} (259 bytes)`);
-    clientState.handshakeCompleted = true;
-    
-    // Responder com sucesso de login (Placeholder)
-    // TODO: Implementar troca de chaves RSA e validação de token
-    const loginSuccess = Buffer.from("00000201", "hex"); // Exemplo de pacote de sucesso
-    socket.write(loginSuccess);
+
+    clientState.clientSecret = crypto.privateDecrypt(
+      { key: serverKeyPair.privateKey, padding: crypto.constants.RSA_PKCS1_PADDING },
+      encrypted
+    );
+
+    logManager.addLog(`[GAME] [${address}] Recebido Segredo Cliente`);
+    clientState.phase = HandshakePhase.AUTHENTICATION;
+  }
+
+  // 3. Receber Autenticação (259 bytes: 3 header + 256 bytes encrypted [ServerSecret + Token])
+  if (clientState.phase === HandshakePhase.AUTHENTICATION && clientState.buffer.length >= 259) {
+    const encrypted = clientState.buffer.subarray(3, 259);
+    clientState.buffer = clientState.buffer.subarray(259);
+
+    const decrypted = crypto.privateDecrypt(
+      { key: serverKeyPair.privateKey, padding: crypto.constants.RSA_PKCS1_PADDING },
+      encrypted
+    );
+
+    // Verificar se o ServerSecret bate
+    const receivedServerSecret = decrypted.subarray(0, 8);
+    if (receivedServerSecret.equals(clientState.serverSecret)) {
+      logManager.addLog(`[GAME] [${address}] Autenticação validada com sucesso!`);
+      
+      // Enviar Confirmação de Login
+      // Payload: ClientSecret (8) + SuccessByte (1) + Token (12) = 21 bytes
+      const successPayload = Buffer.alloc(128, 0);
+      clientState.clientSecret!.copy(successPayload, 0);
+      successPayload[8] = 0x01; // Success
+      Buffer.from("manus_server").copy(successPayload, 9); // Token fake
+
+      const encryptedSuccess = crypto.publicEncrypt(
+        { key: clientState.clientPublicKey!, padding: crypto.constants.RSA_PKCS1_PADDING },
+        successPayload
+      );
+
+      socket.write(Buffer.concat([Buffer.from([0x00, 0x00, 0x80]), encryptedSuccess]));
+      clientState.phase = HandshakePhase.COMPLETED;
+      logManager.addLog(`[GAME] [${address}] Login finalizado. Entrando no mundo...`);
+      
+      // Enviar pacote para mudar estado para 'In Game' (s=5)
+      // Baseado em com/mmo/c/c.smali, precisamos enviar um pacote que mude s para 5.
+      // Exemplo: 00 01 01 (opcode 1, sub-opcode 1) - Ajustar conforme necessário
+      socket.write(Buffer.from("000101", "hex"));
+    } else {
+      logManager.addLog(`[GAME] [${address}] Erro: Segredo do servidor inválido na autenticação`);
+      socket.end();
+    }
   }
 }
 
