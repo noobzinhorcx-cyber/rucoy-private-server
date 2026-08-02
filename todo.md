@@ -28,3 +28,4 @@
 - [x] Verificar se logs aparecem em tempo real
 - [x] Testar endpoint /server_list.json
 - [x] Validar formato JSON compatível com Rucoy Online
+- [x] Testar integração ponta a ponta: rucoy_server.py -> backend -> frontend
