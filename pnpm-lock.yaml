@@ -118,6 +118,9 @@ importers:
       axios:
         specifier: ^1.12.0
         version: 1.12.2
+      bore-node:
+        specifier: ^0.0.4
+        version: 0.0.4
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -2427,6 +2430,9 @@ packages:
   body-parser@1.20.3:
     resolution: {integrity: sha512-7rAxByjUMqQ3/bHJy7D6OGXvx/MMc4IqBn/X0fcM1QUcAItpZrBEYhWGem+tzXH90c+G01ypMcYJBO9Y30203g==}
     engines: {node: '>= 0.8', npm: 1.2.8000 || >= 1.4.16}
+
+  bore-node@0.0.4:
+    resolution: {integrity: sha512-jvU2FdTVMPcjOpdlCttMDRGLLWzfBroAmdd6FLpZyLuaiwAMkzAdmvdBpU50fKP/wHsBbXj4eni8AeFTq+yIfQ==}
 
   bowser@2.12.1:
     resolution: {integrity: sha512-z4rE2Gxh7tvshQ4hluIT7XcFrgLIQaw9X3A+kTTRdovCz5PMukm/0QC/BKSYPj3omF5Qfypn9O/c5kgpmvYUCw==}
@@ -6817,6 +6823,8 @@ snapshots:
       unpipe: 1.0.0
     transitivePeerDependencies:
       - supports-color
+
+  bore-node@0.0.4: {}
 
   bowser@2.12.1: {}
 

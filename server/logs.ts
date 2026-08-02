@@ -58,6 +58,14 @@ class LogManager extends EventEmitter {
     this.servers = this.servers.filter((s) => !(s.ip === ip && s.port === port));
     this.addLog(`[SERVER] Servidor removido: ${ip}:${port}`);
   }
+
+  updateServerAddress(host: string, port: number) {
+    if (this.servers.length > 0) {
+      this.servers[0].ip = host;
+      this.servers[0].port = port;
+      this.addLog(`[SERVER] Endereço atualizado: ${this.servers[0].name} -> ${host}:${port}`);
+    }
+  }
 }
 
 export const logManager = new LogManager();

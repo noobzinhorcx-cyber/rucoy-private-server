@@ -13,6 +13,7 @@ import { logManager } from "../logs";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { LogPayload } from "../routers";
 import { startGameServer } from "../gameServer";
+import { TCPManager } from "../tunnel";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -56,6 +57,21 @@ async function startServer() {
       res.status(400).json({ error: "message é obrigatório" });
     }
   });
+  
+  // Iniciar túnel TCP via bore.pub
+  const GAME_PORT = parseInt(process.env.GAME_PORT || "4000");
+  const tcpManager = new TCPManager(GAME_PORT);
+  
+  logManager.addLog("[TUNNEL] Iniciando túnel TCP via bore.pub...");
+  const tunnelInfo = await tcpManager.start();
+  
+  if (tunnelInfo) {
+    logManager.addLog(`[TUNNEL] Túnel criado com sucesso: ${tunnelInfo.host}:${tunnelInfo.port}`);
+    // Atualizar server_list.json com o endereço do túnel
+    logManager.updateServerAddress(tunnelInfo.host, tunnelInfo.port);
+  } else {
+    logManager.addLog("[TUNNEL] Falha ao criar túnel, usando localhost como fallback");
+  }
   
   // Endpoint para lista de servidores (compatível com Rucoy Online)
   app.get("/server_list.json", (req, res) => {
@@ -125,6 +141,9 @@ async function startServer() {
     startGameServer().catch((error) => {
       logManager.addLog(`[GAME] Falha ao iniciar servidor de jogo: ${error.message}`);
     });
+    
+    // Armazenar referência do tcpManager para cleanup
+    (globalThis as any).__tcpManager = tcpManager;
   });
 }
 
