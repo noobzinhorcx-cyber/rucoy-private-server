@@ -62,12 +62,17 @@ async function startServer() {
   const GAME_PORT = parseInt(process.env.GAME_PORT || "4000");
   const tcpManager = new TCPManager(GAME_PORT);
   
+  // Ouvir eventos de atualização do túnel para manter o server_list.json sincronizado
+  tcpManager.on("ready", (tunnelInfo) => {
+    logManager.addLog(`[TUNNEL] Endereço atualizado via evento: ${tunnelInfo.host}:${tunnelInfo.port}`);
+    logManager.updateServerAddress(tunnelInfo.host, tunnelInfo.port);
+  });
+  
   logManager.addLog("[TUNNEL] Iniciando túnel TCP via pinggy.io...");
   const tunnelInfo = await tcpManager.start();
   
   if (tunnelInfo) {
-    logManager.addLog(`[TUNNEL] Túnel criado com sucesso: ${tunnelInfo.host}:${tunnelInfo.port}`);
-    // Atualizar server_list.json com o endereço do túnel
+    logManager.addLog(`[TUNNEL] Túnel inicial criado: ${tunnelInfo.host}:${tunnelInfo.port}`);
     logManager.updateServerAddress(tunnelInfo.host, tunnelInfo.port);
   } else {
     logManager.addLog("[TUNNEL] Falha ao criar túnel, usando localhost como fallback");

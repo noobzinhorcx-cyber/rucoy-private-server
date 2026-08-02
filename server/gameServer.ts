@@ -37,9 +37,9 @@ interface ClientState {
   clientPublicKey?: crypto.KeyObject;
 }
 
-// Chave RSA do Servidor (2048 bits para gerar blocos de 256 bytes)
+// Chave RSA do Servidor (1024 bits para compatibilidade com o APK)
 const serverKeyPair = crypto.generateKeyPairSync("rsa", {
-  modulusLength: 2048,
+  modulusLength: 1024,
   publicExponent: 65537,
 });
 
@@ -54,28 +54,26 @@ function handleClient(socket: net.Socket): void {
     serverSecret: crypto.randomBytes(8),
   };
 
-  // Iniciar handshake enviando a versão
+  // 1. Enviar Versão (4 bytes)
   const versionPacket = Buffer.alloc(4);
-  versionPacket.writeInt32BE(25); // Versão 25 esperada pelo APK
+  versionPacket.writeInt32BE(25);
   socket.write(versionPacket);
   logManager.addLog(`[GAME] [${address}] Enviado Versão 25`);
 
-  // Próximo passo: Enviar chave pública do servidor
-  const modulus = serverKeyPair.publicKey.export({ format: "jwk" }).n;
-  if (!modulus) return;
-  const modulusBuf = Buffer.from(modulus, "base64url");
+  // 2. Enviar Chave Pública do Servidor (132 bytes: 128 modulus + 4 exponent)
+  const publicKey = serverKeyPair.publicKey.export({ type: "pkcs1", format: "der" });
+  // Extrair modulus e exponent manualmente para bater com o buffer de 132 bytes do APK
+  const jwk = serverKeyPair.publicKey.export({ format: "jwk" });
+  const modulusBuf = Buffer.from(jwk.n!, "base64url");
   const exponentBuf = Buffer.alloc(4);
   exponentBuf.writeInt32BE(65537);
 
-  const keyPacket = Buffer.concat([
-    Buffer.from([0x00, 0x01, 0x04]), // Header: 260 bytes payload (256 modulus + 4 exponent)
-    modulusBuf,
-    exponentBuf
-  ]);
-  
+  // O APK aloca 132 bytes (0x84)
+  const keyPacket = Buffer.concat([modulusBuf, exponentBuf]);
   socket.write(keyPacket);
+  
   clientState.phase = HandshakePhase.RSA_KEY_EXCHANGE;
-  logManager.addLog(`[GAME] [${address}] Enviado Chave RSA Servidor (263 bytes)`);
+  logManager.addLog(`[GAME] [${address}] Enviado Chave RSA Servidor (132 bytes)`);
 
   socket.on("data", (data: Buffer) => {
     clientState.buffer = Buffer.concat([clientState.buffer, data]);
@@ -109,46 +107,45 @@ function handleClient(socket: net.Socket): void {
 function processGameData(socket: net.Socket, clientState: ClientState): void {
   const address = clientState.address;
 
-  // 1. Receber Chave Pública do Cliente (135 bytes: 3 header + 128 modulus + 4 exponent)
-  if (clientState.phase === HandshakePhase.RSA_KEY_EXCHANGE && clientState.buffer.length >= 135) {
-    const payload = clientState.buffer.subarray(3, 135);
-    clientState.buffer = clientState.buffer.subarray(135);
+  // 1. Receber Chave Pública do Cliente (133 bytes: 129 modulus + 4 exponent)
+  // O APK usa BigInteger.toByteArray() que pode ter 129 bytes se o MSB for 1
+  if (clientState.phase === HandshakePhase.RSA_KEY_EXCHANGE && clientState.buffer.length >= 133) {
+    const payload = clientState.buffer.subarray(0, 133);
+    clientState.buffer = clientState.buffer.subarray(133);
 
-    const modulus = payload.subarray(0, 128);
-    const exponent = payload.readInt32BE(128);
+    const modulus = payload.subarray(0, 129);
+    const exponent = payload.readInt32BE(129);
+
+    // Remover byte de sinal do BigInteger se existir (129 bytes -> 128 bytes)
+    const cleanModulus = modulus.length === 129 && modulus[0] === 0 ? modulus.subarray(1) : modulus;
 
     // Importar chave do cliente
     clientState.clientPublicKey = crypto.createPublicKey({
       key: {
         kty: "RSA",
-        n: modulus.toString("base64url"),
-        e: Buffer.from([0, exponent >> 16, exponent >> 8, exponent & 0xFF]).toString("base64url"),
+        n: cleanModulus.toString("base64url"),
+        e: Buffer.from([0, (exponent >> 16) & 0xFF, (exponent >> 8) & 0xFF, exponent & 0xFF]).toString("base64url"),
       },
       format: "jwk",
     });
 
     logManager.addLog(`[GAME] [${address}] Recebida Chave RSA Cliente (1024 bits)`);
 
-    // Enviar Segredo do Servidor (criptografado com a chave do cliente)
+    // Enviar Segredo do Servidor (128 bytes criptografados)
     const encryptedSecret = crypto.publicEncrypt(
       { key: clientState.clientPublicKey, padding: crypto.constants.RSA_PKCS1_PADDING },
       clientState.serverSecret
     );
     
-    const secretPacket = Buffer.concat([
-      Buffer.from([0x00, 0x00, 0x80]), // Header 128 bytes
-      encryptedSecret
-    ]);
-    
-    socket.write(secretPacket);
+    socket.write(encryptedSecret);
     clientState.phase = HandshakePhase.SECRET_EXCHANGE;
-    logManager.addLog(`[GAME] [${address}] Enviado Segredo Servidor`);
+    logManager.addLog(`[GAME] [${address}] Enviado Segredo Servidor (128 bytes)`);
   }
 
-  // 2. Receber Segredo do Cliente (259 bytes: 3 header + 256 bytes encrypted)
-  if (clientState.phase === HandshakePhase.SECRET_EXCHANGE && clientState.buffer.length >= 259) {
-    const encrypted = clientState.buffer.subarray(3, 259);
-    clientState.buffer = clientState.buffer.subarray(259);
+  // 2. Receber Segredo do Cliente (128 bytes encrypted)
+  if (clientState.phase === HandshakePhase.SECRET_EXCHANGE && clientState.buffer.length >= 128) {
+    const encrypted = clientState.buffer.subarray(0, 128);
+    clientState.buffer = clientState.buffer.subarray(128);
 
     clientState.clientSecret = crypto.privateDecrypt(
       { key: serverKeyPair.privateKey, padding: crypto.constants.RSA_PKCS1_PADDING },
@@ -159,10 +156,10 @@ function processGameData(socket: net.Socket, clientState: ClientState): void {
     clientState.phase = HandshakePhase.AUTHENTICATION;
   }
 
-  // 3. Receber Autenticação (259 bytes: 3 header + 256 bytes encrypted [ServerSecret + Token])
-  if (clientState.phase === HandshakePhase.AUTHENTICATION && clientState.buffer.length >= 259) {
-    const encrypted = clientState.buffer.subarray(3, 259);
-    clientState.buffer = clientState.buffer.subarray(259);
+  // 3. Receber Autenticação (128 bytes encrypted [ServerSecret + Token])
+  if (clientState.phase === HandshakePhase.AUTHENTICATION && clientState.buffer.length >= 128) {
+    const encrypted = clientState.buffer.subarray(0, 128);
+    clientState.buffer = clientState.buffer.subarray(128);
 
     const decrypted = crypto.privateDecrypt(
       { key: serverKeyPair.privateKey, padding: crypto.constants.RSA_PKCS1_PADDING },
@@ -186,7 +183,7 @@ function processGameData(socket: net.Socket, clientState: ClientState): void {
         successPayload
       );
 
-      socket.write(Buffer.concat([Buffer.from([0x00, 0x00, 0x80]), encryptedSuccess]));
+      socket.write(encryptedSuccess);
       clientState.phase = HandshakePhase.COMPLETED;
       logManager.addLog(`[GAME] [${address}] Login finalizado. Entrando no mundo...`);
       
