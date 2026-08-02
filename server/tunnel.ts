@@ -179,13 +179,16 @@ class TCPManager extends EventEmitter {
       });
 
       // Conectar ao pinggy.io via SSH na porta 443
+      // Pinggy.io requer password "0000" para free tier com auth keyword
       this.sshClient.connect({
         host: "free.pinggy.io",
         port: 443,
-        username: "tcp",
+        username: "auth",
+        password: "0000",
         readyTimeout: 15000,
         keepaliveInterval: 30000,
         keepaliveCountMax: 3,
+        tryKeyboard: true,
         // Não verificar host key (pinggy é dinâmico)
         hostHash: "sha256",
         hostVerifier: () => true,
