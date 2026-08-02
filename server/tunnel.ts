@@ -1,190 +1,206 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { Client as SSHClient, type ClientChannel } from "ssh2";
+import net from "net";
 import { EventEmitter } from "events";
 import { logManager } from "./logs";
 
 /**
- * TCP Tunnel via bore.pub
+ * TCP Tunnel via Pinggy.io SSH Reverse Tunnel
  * 
- * Cria um túnel TCP através do bore.pub para expor a porta do jogo (4000)
- * ao mundo externo. O Render Free Plan não permite expor portas TCP,
- * então usamos o bore.pub como proxy.
+ * Cria um túnel TCP através do pinggy.io usando SSH reverso.
+ * Comando SSH equivalente:
+ *   ssh -p 443 -T -N -R0:localhost:4000 tcp@free.pinggy.io
  * 
- * O bore.pub retorna uma URL como: xxx.bore.pub:PORT
+ * O pinggy.io aloca uma porta pública que forwarda para localhost:4000.
+ * Gratuito, sem cadastro, sem cartão de crédito.
  */
 
 interface TunnelInfo {
   host: string;
   port: number;
-  publicPort?: number;
-}
-
-const BORE_VERSION = "v0.5.0";
-
-function getArch(): string {
-  if (process.arch === "x64") return "x86_64";
-  if (process.arch === "arm64") return "aarch64";
-  return process.arch;
-}
-
-function getPlatform(): string {
-  if (process.platform === "linux") return "x86_64-unknown-linux-musl";
-  if (process.platform === "darwin") return "x86_64-apple-darwin";
-  if (process.platform === "win32") return "x86_64-pc-windows-msvc";
-  return "x86_64-unknown-linux-musl";
-}
-
-function getBoreBinaryPath(): string {
-  // Usar um diretório temporário no projeto para o binário
-  const binDir = path.resolve(process.cwd(), ".bore-bin");
-  if (!fs.existsSync(binDir)) {
-    fs.mkdirSync(binDir, { recursive: true });
-  }
-  return path.join(binDir, "bore");
-}
-
-async function downloadBore(): Promise<boolean> {
-  const binPath = getBoreBinaryPath();
-  
-  if (fs.existsSync(binPath)) {
-    logManager.addLog("[TUNNEL] Binário bore já existe, pulando download.");
-    return true;
-  }
-
-  const platform = getPlatform();
-  const ext = process.platform === "win32" ? ".exe" : "";
-  const url = `https://github.com/ekzhang/bore/releases/download/${BORE_VERSION}/bore-${BORE_VERSION}-${platform}${ext}.gz`;
-  
-  logManager.addLog(`[TUNNEL] Baixando bore de: ${url}`);
-
-  try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      logManager.addLog(`[TUNNEL] Erro ao baixar bore: HTTP ${response.status}`);
-      return false;
-    }
-
-    const gzBuffer = Buffer.from(await response.arrayBuffer());
-    
-    // Descomprimir gzip
-    const { gunzipSync } = await import("node:zlib");
-    const binary = gunzipSync(gzBuffer);
-    
-    fs.writeFileSync(binPath, binary);
-    fs.chmodSync(binPath, 0o755);
-    
-    logManager.addLog("[TUNNEL] Binário bore baixado com sucesso!");
-    return true;
-  } catch (error) {
-    logManager.addLog(`[TUNNEL] Erro ao baixar bore: ${(error as Error).message}`);
-    return false;
-  }
 }
 
 class TCPManager extends EventEmitter {
-  private tunnelProcess: ChildProcess | null = null;
+  private sshClient: SSHClient | null = null;
   private tunnelInfo: TunnelInfo | null = null;
-  private boreBinary: string;
   private gamePort: number;
   private ready: boolean = false;
+  private connectionAttempts: number = 0;
+  private maxRetries: number = 3;
+  private retryDelay: number = 10000;
+  private isConnecting: boolean = false;
 
   constructor(gamePort: number = 4000) {
     super();
     this.gamePort = gamePort;
-    this.boreBinary = getBoreBinaryPath();
   }
 
   async start(): Promise<TunnelInfo | null> {
-    logManager.addLog("[TUNNEL] Preparando túnel TCP via bore.pub...");
-    
-    // Baixar binário se necessário
-    const downloaded = await downloadBore();
-    if (!downloaded) {
-      logManager.addLog("[TUNNEL] Falha ao baixar binário bore.");
-      return null;
-    }
-
-    logManager.addLog(`[TUNNEL] Iniciando bore para porta ${this.gamePort}...`);
-
-    const args = [
-      "local",
-      this.gamePort.toString(),
-      "--to",
-      "bore.pub",
-    ];
-
-    this.tunnelProcess = spawn(this.boreBinary, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
-    });
-
-    this.tunnelProcess.stdout?.on("data", (data: Buffer) => {
-      const output = data.toString().trim();
-      if (output) {
-        logManager.addLog(`[TUNNEL] ${output}`);
-      }
-      this.parseTunnelOutput(output);
-    });
-
-    this.tunnelProcess.stderr?.on("data", (data: Buffer) => {
-      const output = data.toString().trim();
-      if (output) {
-        logManager.addLog(`[TUNNEL] ERR: ${output}`);
-      }
-      this.parseTunnelOutput(output);
-    });
-
-    this.tunnelProcess.on("error", (error) => {
-      logManager.addLog(`[TUNNEL] Erro no processo bore: ${error.message}`);
-    });
-
-    this.tunnelProcess.on("close", (code) => {
-      logManager.addLog(`[TUNNEL] Processo bore fechado com código ${code}`);
-      this.ready = false;
-      this.tunnelInfo = null;
-    });
-
-    // Timeout para esperar a conexão
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        if (this.tunnelInfo) {
-          clearTimeout(timeout);
-          this.ready = true;
-          this.emit("ready", this.tunnelInfo);
-          resolve(this.tunnelInfo);
-        } else {
-          logManager.addLog("[TUNNEL] Timeout: bore não conectou em 20s");
-          resolve(null);
-        }
-      }, 20000);
-
-      // Verificar periodicamente se o túnel está pronto
-      const check = setInterval(() => {
-        if (this.tunnelInfo) {
-          clearTimeout(timeout);
-          clearInterval(check);
-          this.ready = true;
-          this.emit("ready", this.tunnelInfo);
-          resolve(this.tunnelInfo);
-        }
-      }, 2000);
-    });
+    logManager.addLog("[TUNNEL] Iniciando túnel TCP via pinggy.io...");
+    return this.connectWithRetry();
   }
 
-  private parseTunnelOutput(output: string): void {
-    // O bore retorna algo como:
-    // "Listening on xxx.bore.pub:12345"
-    // ou
-    // "listening on bore.pub:12345"
-    const match = output.match(/(?:listening\s+on\s+|Listening\s+on\s+)(\S+):(\d+)/i);
-    if (match) {
-      const host = match[1];
-      const port = parseInt(match[2]);
-      this.tunnelInfo = { host, port, publicPort: port };
-      logManager.addLog(`[TUNNEL] Túnel ativo: ${host}:${port}`);
+  private async connectWithRetry(): Promise<TunnelInfo | null> {
+    this.isConnecting = true;
+    
+    while (this.connectionAttempts < this.maxRetries) {
+      this.connectionAttempts++;
+      logManager.addLog(`[TUNNEL] Tentativa ${this.connectionAttempts}/${this.maxRetries}...`);
+      
+      try {
+        const info = await this.connectSSH();
+        if (info) {
+          this.tunnelInfo = info;
+          this.ready = true;
+          this.emit("ready", info);
+          logManager.addLog(`[TUNNEL] Túnel ativo: ${info.host}:${info.port}`);
+          this.isConnecting = false;
+          return info;
+        }
+      } catch (error) {
+        logManager.addLog(`[TUNNEL] Erro na tentativa ${this.connectionAttempts}: ${(error as Error).message}`);
+      }
+
+      if (this.connectionAttempts < this.maxRetries) {
+        logManager.addLog(`[TUNNEL] Aguardando ${this.retryDelay / 1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, this.retryDelay));
+      }
     }
+
+    this.isConnecting = false;
+    logManager.addLog("[TUNNEL] Todas as tentativas falharam. Usando localhost como fallback.");
+    return null;
+  }
+
+  private connectSSH(): Promise<TunnelInfo | null> {
+    return new Promise((resolve, reject) => {
+      let resolved = false;
+      let resolvedPort: number | null = null;
+
+      const resolveSafe = (info: TunnelInfo | null) => {
+        if (!resolved) {
+          resolved = true;
+          resolve(info);
+        }
+      };
+
+      this.sshClient = new SSHClient();
+
+      // Quando o SSH está pronto, configurar reverse forwarding
+      this.sshClient.on("ready", () => {
+        logManager.addLog("[TUNNEL] SSH conectado ao pinggy.io!");
+
+        // Verificar se o servidor de jogo já está rodando
+        const testSocket = new net.Socket();
+        testSocket.connect(this.gamePort, "127.0.0.1", () => {
+          testSocket.destroy();
+          logManager.addLog(`[TUNNEL] Servidor de jogo confirmado na porta ${this.gamePort}`);
+        });
+        testSocket.on("error", () => {
+          logManager.addLog(`[TUNNEL] AVISO: Servidor de jogo pode não estar rodando na porta ${this.gamePort}`);
+        });
+
+        // Configurar reverse forwarding: porta remota 0 = pinggy escolhe
+        this.sshClient!.forwardIn("0.0.0.0", 0, (err, port) => {
+          if (err) {
+            logManager.addLog(`[TUNNEL] Erro forwardIn: ${err.message}`);
+            resolveSafe(null);
+            return;
+          }
+          
+          resolvedPort = port;
+          logManager.addLog(`[TUNNEL] Porta remota alocada: ${port}`);
+          
+          // O pinggy.io retorna o host e porta via forwardIn callback
+          // A URL do túnel será: free.pinggy.io:PORT
+          resolveSafe({
+            host: "free.pinggy.io",
+            port: port,
+          });
+        });
+      });
+
+      // Quando o pinggy.io recebe uma conexão TCP, forwarda para nós
+      this.sshClient.on("tcp connection", (info, accept, reject) => {
+        logManager.addLog(`[TUNNEL] Conexão recebida via túnel de ${info.srcAddr}:${info.srcPort}`);
+        
+        const stream = accept();
+        
+        // Conectar ao servidor de jogo local
+        const localSocket = new net.Socket();
+        
+        localSocket.connect(this.gamePort, "127.0.0.1", () => {
+          logManager.addLog(`[TUNNEL] Forward para jogo local: ${this.gamePort}`);
+          stream.pipe(localSocket).pipe(stream);
+        });
+
+        localSocket.on("error", (err: Error) => {
+          logManager.addLog(`[TUNNEL] Erro conexão local: ${err.message}`);
+          stream?.destroy();
+          localSocket.destroy();
+        });
+
+        stream.on("error", (err: Error) => {
+          logManager.addLog(`[TUNNEL] Erro stream túnel: ${err.message}`);
+          localSocket.destroy();
+        });
+
+        localSocket.on("close", () => {
+          stream?.destroy();
+        });
+
+        stream.on("close", () => {
+          localSocket.destroy();
+        });
+      });
+
+      this.sshClient.on("error", (err) => {
+        logManager.addLog(`[TUNNEL] Erro SSH: ${err.message}`);
+        if (!resolved) {
+          resolved = true;
+          reject(err);
+        }
+      });
+
+      this.sshClient.on("close", () => {
+        logManager.addLog("[TUNNEL] Conexão SSH fechada pelo servidor");
+        this.ready = false;
+        
+        // Tentar reconectar automaticamente
+        if (!this.isConnecting && resolvedPort !== null) {
+          logManager.addLog("[TUNNEL] Tentando reconectar em 10s...");
+          setTimeout(() => {
+            this.connectWithRetry().then((info) => {
+              if (info) {
+                logManager.addLog("[TUNNEL] Reconectado com sucesso!");
+              }
+            });
+          }, 10000);
+        }
+      });
+
+      // Conectar ao pinggy.io via SSH na porta 443
+      this.sshClient.connect({
+        host: "free.pinggy.io",
+        port: 443,
+        username: "tcp",
+        readyTimeout: 15000,
+        keepaliveInterval: 30000,
+        keepaliveCountMax: 3,
+        // Não verificar host key (pinggy é dinâmico)
+        hostHash: "sha256",
+        hostVerifier: () => true,
+      });
+
+      // Timeout para a conexão SSH
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          logManager.addLog("[TUNNEL] Timeout SSH (20s)");
+          this.sshClient?.end();
+          resolve(null);
+        }
+      }, 25000);
+    });
   }
 
   getTunnelInfo(): TunnelInfo | null {
@@ -196,9 +212,10 @@ class TCPManager extends EventEmitter {
   }
 
   stop(): void {
-    if (this.tunnelProcess) {
-      this.tunnelProcess.kill();
-      this.tunnelProcess = null;
+    this.isConnecting = false;
+    if (this.sshClient) {
+      this.sshClient.end();
+      this.sshClient = null;
     }
     this.tunnelInfo = null;
     this.ready = false;

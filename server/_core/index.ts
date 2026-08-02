@@ -58,11 +58,11 @@ async function startServer() {
     }
   });
   
-  // Iniciar túnel TCP via bore.pub
+  // Iniciar túnel TCP via pinggy.io (SSH reverso)
   const GAME_PORT = parseInt(process.env.GAME_PORT || "4000");
   const tcpManager = new TCPManager(GAME_PORT);
   
-  logManager.addLog("[TUNNEL] Iniciando túnel TCP via bore.pub...");
+  logManager.addLog("[TUNNEL] Iniciando túnel TCP via pinggy.io...");
   const tunnelInfo = await tcpManager.start();
   
   if (tunnelInfo) {
