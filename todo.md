@@ -20,8 +20,9 @@
 - [x] Criar procedimento tRPC para obter lista de servidores
 
 ## Servidor Python
-- [ ] Integrar rucoy_server.py com o backend Node.js
-- [ ] Capturar logs de conexões e enviar ao frontend
+- [x] Modificar rucoy_server.py para enviar logs via HTTP ao backend
+- [x] Criar endpoint POST /api/log no backend para receber logs
+- [x] Testar integração: rucoy_server.py -> backend -> frontend
 
 ## Testes
 - [x] Verificar se logs aparecem em tempo real

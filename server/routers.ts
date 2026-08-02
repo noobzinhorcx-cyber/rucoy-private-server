@@ -28,3 +28,10 @@ export const appRouter = router({
 });
 
 export type AppRouter = typeof appRouter;
+
+// Interface para logs recebidos do rucoy_server.py
+export interface LogPayload {
+  message: string;
+  timestamp?: string;
+  source?: string;
+}

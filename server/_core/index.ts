@@ -11,6 +11,8 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { logManager } from "../logs";
 import { WebSocketServer, type WebSocket } from "ws";
+import type { LogPayload } from "../routers";
+
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const server = net.createServer();
@@ -41,6 +43,18 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  
+  // Endpoint para receber logs do rucoy_server.py
+  app.post("/api/log", (req, res) => {
+    const payload = req.body as LogPayload;
+    if (payload.message) {
+      const logEntry = payload.source ? `[${payload.source}] ${payload.message}` : payload.message;
+      logManager.addLog(logEntry);
+      res.json({ success: true });
+    } else {
+      res.status(400).json({ error: "message é obrigatório" });
+    }
+  });
   
   // Endpoint para lista de servidores (compatível com Rucoy Online)
   app.get("/server_list.json", (req, res) => {

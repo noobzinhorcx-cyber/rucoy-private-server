@@ -150,9 +150,17 @@ function vitePluginManusDebugCollector(): Plugin {
   };
 }
 
+// Configurar URL do WebSocket baseado no ambiente
+const wsUrl = process.env.NODE_ENV === "production" 
+  ? `wss://${process.env.VITE_APP_DOMAIN || "localhost:3000"}` 
+  : `ws://localhost:3000`;
+
 const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()];
 
 export default defineConfig({
+  define: {
+    __WS_URL__: JSON.stringify(wsUrl),
+  },
   plugins,
   resolve: {
     alias: {
@@ -182,6 +190,11 @@ export default defineConfig({
     fs: {
       strict: true,
       deny: ["**/.*"],
+    },
+    hmr: {
+      protocol: "wss",
+      host: "3000-iplmr4djb0t37vqrujis8-dbaf7f8c.us2.manus.computer",
+      port: 443,
     },
   },
 });
