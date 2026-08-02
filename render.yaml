@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: rucoy-private-server
+    env: node
+    plan: free
+    buildCommand: pnpm install && pnpm run build
+    startCommand: pnpm start
+    envVars:
+      - key: NODE_ENV
+        value: production
