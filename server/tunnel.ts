@@ -42,9 +42,9 @@ class TCPManager extends EventEmitter {
   private async connectWithRetry(): Promise<TunnelInfo | null> {
     this.isConnecting = true;
     
-    while (this.connectionAttempts < this.maxRetries) {
+    while (true) {
       this.connectionAttempts++;
-      logManager.addLog(`[TUNNEL] Tentativa ${this.connectionAttempts}/${this.maxRetries}...`);
+      logManager.addLog(`[TUNNEL] Tentativa ${this.connectionAttempts}...`);
       
       try {
         const info = await this.connectSSH();
@@ -54,21 +54,17 @@ class TCPManager extends EventEmitter {
           this.emit("ready", info);
           logManager.addLog(`[TUNNEL] Túnel ativo: ${info.host}:${info.port}`);
           this.isConnecting = false;
+          this.connectionAttempts = 0; // Reset counter on success
           return info;
         }
       } catch (error) {
         logManager.addLog(`[TUNNEL] Erro na tentativa ${this.connectionAttempts}: ${(error as Error).message}`);
       }
 
-      if (this.connectionAttempts < this.maxRetries) {
-        logManager.addLog(`[TUNNEL] Aguardando ${this.retryDelay / 1000}s...`);
-        await new Promise(resolve => setTimeout(resolve, this.retryDelay));
-      }
+      const delay = Math.min(1000 * Math.pow(2, this.connectionAttempts), 60000); // Exponential backoff up to 60s
+      logManager.addLog(`[TUNNEL] Aguardando ${delay / 1000}s para próxima tentativa...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
-
-    this.isConnecting = false;
-    logManager.addLog("[TUNNEL] Todas as tentativas falharam. Usando localhost como fallback.");
-    return null;
   }
 
   private connectSSH(): Promise<TunnelInfo | null> {
@@ -164,17 +160,16 @@ class TCPManager extends EventEmitter {
       this.sshClient.on("close", () => {
         logManager.addLog("[TUNNEL] Conexão SSH fechada pelo servidor");
         this.ready = false;
+        this.tunnelInfo = null;
         
         // Tentar reconectar automaticamente
-        if (!this.isConnecting && resolvedPort !== null) {
-          logManager.addLog("[TUNNEL] Tentando reconectar em 10s...");
-          setTimeout(() => {
-            this.connectWithRetry().then((info) => {
-              if (info) {
-                logManager.addLog("[TUNNEL] Reconectado com sucesso!");
-              }
-            });
-          }, 10000);
+        if (!this.isConnecting) {
+          logManager.addLog("[TUNNEL] Reiniciando processo de conexão...");
+          this.connectWithRetry().then((info) => {
+            if (info) {
+              logManager.addLog("[TUNNEL] Reconectado com sucesso!");
+            }
+          });
         }
       });
 

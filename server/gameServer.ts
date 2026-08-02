@@ -24,6 +24,8 @@ interface ClientState {
   address: string;
   connectedAt: Date;
   isHttp: boolean;
+  handshakeSent: boolean;
+  handshakeCompleted: boolean;
 }
 
 function handleClient(socket: net.Socket): void {
@@ -33,7 +35,16 @@ function handleClient(socket: net.Socket): void {
     address,
     connectedAt: new Date(),
     isHttp: false,
+    handshakeSent: false,
+    handshakeCompleted: false,
   };
+
+  // Rucoy Handshake: O servidor deve enviar 135 bytes assim que o cliente conecta
+  setTimeout(() => {
+    if (!clientState.isHttp && !clientState.handshakeSent) {
+      sendHandshake(socket, clientState);
+    }
+  }, 100);
 
   socket.on("data", (data: Buffer) => {
     // Acumular dados recebidos
@@ -42,22 +53,18 @@ function handleClient(socket: net.Socket): void {
     // Verificar se é uma requisição HTTP (health check do Render)
     if (!clientState.isHttp && isHttpRequest(data)) {
       clientState.isHttp = true;
-      // Fechar silenciosamente — é apenas o health check do Render
       socket.end();
       return;
     }
 
-    // Se já identificou como HTTP, ignorar o resto
-    if (clientState.isHttp) {
-      return;
-    }
+    if (clientState.isHttp) return;
 
     // Log de dados reais do jogo
     const hex = data.toString("hex");
     const size = data.length;
-    logManager.addLog(`[GAME] Dados de ${address} (${size} bytes): ${hex}`);
+    logManager.addLog(`[GAME] Recebido de ${address} (${size} bytes): ${hex}`);
 
-    // Aqui entra a lógica de processamento do protocolo Rucoy
+    // Processar protocolo
     processGameData(socket, clientState);
   });
 
@@ -77,10 +84,35 @@ function handleClient(socket: net.Socket): void {
   });
 }
 
-function processGameData(_socket: net.Socket, _clientState: ClientState): void {
-  // Placeholder para processamento do protocolo Rucoy
-  // Por enquanto, apenas confirmamos recebimento
-  // TODO: Implementar handshake, movimento, chat, etc.
+function sendHandshake(socket: net.Socket, clientState: ClientState): void {
+  // De acordo com engenharia reversa, o servidor envia 135 bytes
+  // TODO: Substituir pelos bytes reais do servidor oficial se necessário
+  const handshake = Buffer.alloc(135, 0);
+  
+  // Alguns servidores Rucoy antigos usavam os primeiros bytes para versão/status
+  handshake[0] = 0x00;
+  handshake[1] = 0x00;
+  handshake[2] = 0x84; // 132 em hex (excluindo header de 3 bytes)
+  
+  logManager.addLog(`[GAME] Enviando handshake (135 bytes) para ${clientState.address}`);
+  socket.write(handshake);
+  clientState.handshakeSent = true;
+}
+
+function processGameData(socket: net.Socket, clientState: ClientState): void {
+  // Se recebemos 259 bytes, é provavelmente a resposta do handshake
+  if (!clientState.handshakeCompleted && clientState.buffer.length >= 259) {
+    const response = clientState.buffer.subarray(0, 259);
+    clientState.buffer = clientState.buffer.subarray(259);
+    
+    logManager.addLog(`[GAME] Handshake recebido de ${clientState.address} (259 bytes)`);
+    clientState.handshakeCompleted = true;
+    
+    // Responder com sucesso de login (Placeholder)
+    // TODO: Implementar troca de chaves RSA e validação de token
+    const loginSuccess = Buffer.from("00000201", "hex"); // Exemplo de pacote de sucesso
+    socket.write(loginSuccess);
+  }
 }
 
 function startGameServer(): Promise<void> {
