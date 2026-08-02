@@ -12,6 +12,7 @@ import { serveStatic, setupVite } from "./vite";
 import { logManager } from "../logs";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { LogPayload } from "../routers";
+import { startGameServer } from "../gameServer";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -119,6 +120,11 @@ async function startServer() {
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
     logManager.addLog(`[SERVER] Ouvindo na porta ${port}`);
+
+    // Iniciar o servidor de jogo TCP (Rucoy)
+    startGameServer().catch((error) => {
+      logManager.addLog(`[GAME] Falha ao iniciar servidor de jogo: ${error.message}`);
+    });
   });
 }
 
