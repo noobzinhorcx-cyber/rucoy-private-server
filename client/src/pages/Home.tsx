@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 
-declare const __WS_URL__: string;
-
 export default function Home() {
   const [logs, setLogs] = useState<string[]>([]);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Conectar ao WebSocket para receber logs em tempo real
-    const wsUrl = __WS_URL__ || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}`;
     const ws = new WebSocket(`${wsUrl}/api/logs`);
 
     ws.onmessage = (event) => {
@@ -30,7 +29,7 @@ export default function Home() {
         ws.close();
       }
     };
-  }, [__WS_URL__]);
+  }, []);
 
   // Auto-scroll para o final dos logs
   useEffect(() => {
