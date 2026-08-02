@@ -5,6 +5,8 @@ services:
     plan: free
     buildCommand: pnpm install && pnpm run build
     startCommand: pnpm start
-    envVars:
-      - key: NODE_ENV
-        value: production
+  envVars:
+    - key: NODE_ENV
+      value: production
+    - key: VITE_APP_DOMAIN
+      value: rucoy-private-server.onrender.com
