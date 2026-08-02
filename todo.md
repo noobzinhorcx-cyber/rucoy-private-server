@@ -5,7 +5,7 @@
 - [x] WebSocket para streaming de logs
 - [x] Endpoint GET /server_list.json com formato compatível
 - [x] Sistema de logs do servidor
-- [ ] Integração com rucoy_server.py para capturar conexões
+- [x] Integração com rucoy_server.py para capturar conexões
 
 ## Frontend
 - [x] Remover todos os componentes padrão (DashboardLayout, navegação, etc)
