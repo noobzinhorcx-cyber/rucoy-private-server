@@ -117,7 +117,7 @@ class TCPManager extends EventEmitter {
 
       // Quando o pinggy.io recebe uma conexão TCP, forwarda para nós
       this.sshClient.on("tcp connection", (info, accept, reject) => {
-        logManager.addLog(`[TUNNEL] Conexão recebida via túnel de ${info.srcAddr}:${info.srcPort}`);
+        logManager.addLog(`[TUNNEL] Conexão recebida via túnel de ${info.srcIP}:${info.srcPort}`);
         
         const stream = accept();
         
