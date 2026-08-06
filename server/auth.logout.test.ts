@@ -1,62 +1,77 @@
-import { describe, expect, it } from "vitest";
-import { appRouter } from "./routers";
-import { COOKIE_NAME } from "../shared/const";
-import type { TrpcContext } from "./_core/context";
+import { EventEmitter } from "events";
 
-type CookieCall = {
+export interface ServerInfo {
   name: string;
-  options: Record<string, unknown>;
-};
-
-type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
-
-function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] } {
-  const clearedCookies: CookieCall[] = [];
-
-  const user: AuthenticatedUser = {
-    id: 1,
-    openId: "sample-user",
-    email: "sample@example.com",
-    name: "Sample User",
-    loginMethod: "manus",
-    role: "user",
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    lastSignedIn: new Date(),
-  };
-
-  const ctx: TrpcContext = {
-    user,
-    req: {
-      protocol: "https",
-      headers: {},
-    } as TrpcContext["req"],
-    res: {
-      clearCookie: (name: string, options: Record<string, unknown>) => {
-        clearedCookies.push({ name, options });
-      },
-    } as TrpcContext["res"],
-  };
-
-  return { ctx, clearedCookies };
+  ip: string;
+  port: number;
+  region: string;
+  version: string;
+  visible: boolean;
+  languages: string[];
+  public_key: string;
 }
 
-describe("auth.logout", () => {
-  it("clears the session cookie and reports success", async () => {
-    const { ctx, clearedCookies } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
+class LogManager extends EventEmitter {
+  private logs: string[] = [];
+  private maxLogs = 1000;
+  private servers: ServerInfo[] = [
+    {
+      name: "Rucoy Private",
+      ip: "xbxrm-187-65-69-66.run.pinggy-free.link",
+      port: 39031,
+      region: "br",
+      version: "1.25.2",
+      visible: true,
+      languages: ["pt", "en"],
+      public_key: "rucoy_private_server_key_v1",
+    },
+  ];
 
-    const result = await caller.auth.logout();
+  addLog(message: string) {
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] ${message}`;
+    this.logs.push(logEntry);
 
-    expect(result).toEqual({ success: true });
-    expect(clearedCookies).toHaveLength(1);
-    expect(clearedCookies[0]?.name).toBe(COOKIE_NAME);
-    expect(clearedCookies[0]?.options).toMatchObject({
-      maxAge: -1,
-      secure: true,
-      sameSite: "none",
-      httpOnly: true,
-      path: "/",
-    });
-  });
-});
+    // Manter apenas os últimos N logs
+    if (this.logs.length > this.maxLogs) {
+      this.logs.shift();
+    }
+
+    // Emitir evento para WebSocket
+    this.emit("log", logEntry);
+  }
+
+  getLogs(): string[] {
+    return this.logs;
+  }
+
+  getServers(): ServerInfo[] {
+    return this.servers;
+  }
+
+  addServer(server: ServerInfo) {
+    this.servers.push(server);
+    this.addLog(
+      `[SERVER] Novo servidor adicionado: \( {server.name} ( \){server.ip}:${server.port})`
+    );
+  }
+
+  removeServer(ip: string, port: number) {
+    this.servers = this.servers.filter(
+      (s) => !(s.ip === ip && s.port === port)
+    );
+    this.addLog(`[SERVER] Servidor removido: \( {ip}: \){port}`);
+  }
+
+  updateServerAddress(host: string, port: number) {
+    if (this.servers.length > 0) {
+      this.servers[0].ip = host;
+      this.servers[0].port = port;
+      this.addLog(
+        `[SERVER] Endereço atualizado: ${this.servers[0].name} -> \( {host}: \){port}`
+      );
+    }
+  }
+}
+
+export const logManager = new LogManager();
